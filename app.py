@@ -1,6 +1,6 @@
 import json
-import base64
 import tempfile
+import requests
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
@@ -9,15 +9,15 @@ from pydantic import BaseModel
 from docxtpl import DocxTemplate
 
 
-app = FastAPI(title="CV Renderer", version="2.0.0")
+app = FastAPI(title="CV Renderer", version="3.0.0")
 
 
 # ==============================
-# Request Model (JSON only)
+# Request Model (JSON)
 # ==============================
 
 class CVRequest(BaseModel):
-    template_base64: str
+    template_url: str
     cv_data: str
 
 
@@ -70,17 +70,20 @@ def health():
 
 
 # ==============================
-# Render Endpoint (JSON)
+# Render Endpoint (template_url)
 # ==============================
 
 @app.post("/render_cv")
 async def render_cv(request: CVRequest):
 
-    # Decode template from base64
+    # Download template from URL
     try:
-        template_bytes = base64.b64decode(request.template_base64)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid template_base64 encoding")
+        response = requests.get(request.template_url)
+        if response.status_code != 200:
+            raise Exception("Failed to download template")
+        template_bytes = response.content
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Template download error: {e}")
 
     # Parse cv_data JSON
     try:
@@ -96,7 +99,7 @@ async def render_cv(request: CVRequest):
         template_path = f"{td}/template.docx"
         output_path = f"{td}/CV.docx"
 
-        # Write decoded template
+        # Save template
         with open(template_path, "wb") as f:
             f.write(template_bytes)
 
