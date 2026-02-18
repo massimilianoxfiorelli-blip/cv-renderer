@@ -6,8 +6,8 @@ import requests
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, HttpUrl
+from fastapi.responses import Response
+from pydantic import BaseModel
 from docxtpl import DocxTemplate
 
 
@@ -15,7 +15,7 @@ from docxtpl import DocxTemplate
 # App Config
 # ==========================================================
 
-app = FastAPI(title="CV Renderer", version="3.2.0")
+app = FastAPI(title="CV Renderer", version="4.0.0")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -23,15 +23,17 @@ logger = logging.getLogger(__name__)
 
 # ==========================================================
 # Request Model
-# ========================================================== 
+# ==========================================================
+
 class CVRequest(BaseModel):
-    template_url: HttpUrl
+    template_url: str
     cv_data: str
 
 
 # ==========================================================
 # Context Normalization
 # ==========================================================
+
 def normalize_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     defaults = {
@@ -43,7 +45,7 @@ def normalize_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "email": "",
         },
         "target_title": "",
-        "headline_keywords": "",
+        "headline_keywords": '',
         "top_summary": "",
         "summary": "",
         "topkeywords": [],
@@ -69,11 +71,12 @@ def normalize_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ==========================================================
-# Health Endpoint
-# ========================================================== 
+# Health & Root
+# ==========================================================
+
 @app.get("/")
 def root():
-    return {"status": "CV Renderer is live", "version": "3.2.0"}
+    return {"status": "CV Renderer live", "version": "4.0.0"}
 
 
 @app.get("/health")
@@ -84,23 +87,27 @@ def health():
 # ==========================================================
 # Template Download
 # ==========================================================
+
 def download_template(url: str) -> bytes:
     try:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("Invalid template URL")
+
         logger.info(f"Downloading template from: {url}")
 
         response = requests.get(
             url,
             allow_redirects=True,
-            timeout=20
+            timeout=30
         )
 
         if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
+            raise Exception(f"Template download failed (HTTP {response.status_code})")
 
         return response.content
 
     except Exception as e:
-        logger.error(f"Template download failed: {e}")
+        logger.error(f"Template download error: {e}")
         raise HTTPException(
             status_code=400,
             detail=f"Template download error: {str(e)}"
@@ -110,19 +117,18 @@ def download_template(url: str) -> bytes:
 # ==========================================================
 # Render Endpoint
 # ==========================================================
+
 @app.post("/render_cv")
 async def render_cv(request: CVRequest):
 
     # 1️ Download template
-    template_bytes = download_template(str(request.template_url))
+    template_bytes = download_template(request.template_url)
 
-    # 2️ Parse JSON
+    # 2️ Parse cv_data
     try:
         context = json.loads(request.cv_data)
-
         if not isinstance(context, dict):
             raise ValueError("cv_data must be a JSON object")
-
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -131,25 +137,35 @@ async def render_cv(request: CVRequest):
 
     context = normalize_context(context)
 
-    # 3️ Render document safely
     try:
+        # Temporary file paths
         template_path = f"/tmp/template_{uuid.uuid4()}.docx"
-        output_path = f"/tmp/CV_{uuid.uuid4()}.docx"
+        output_path = f"/tmp/output_{uuid.uuid4()}.docx"
 
         # Save template
         with open(template_path, "wb") as f:
             f.write(template_bytes)
 
-        # Render
+        # Render document
         doc = DocxTemplate(template_path)
         doc.render(context)
         doc.save(output_path)
 
-        # Return file (IMPORTANT: no TemporaryDirectory!)
-        return FileResponse(
-            path=output_path,
+        # Read file in memory (NO streaming)
+        with open(output_path, "rb") as f:
+            file_bytes = f.read()
+
+        # Cleanup
+        os.remove(template_path)
+        os.remove(output_path)
+
+        # Return binary response
+        return Response(
+            content=file_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            filename="CV.docx"
+            headers={
+                "Content-Disposition": "attachment; filename=CV.docx"
+            }
         )
 
     except Exception as e:
